@@ -63,6 +63,18 @@ def paginate_canvas(url, params=None):
         params = {}
 
 # Courses & assignments
+def get_current_and_future_courses():
+    # Include courses that are current or future, and enrollments that are active or pending
+    url = f"{CANVAS_BASE_URL}/api/v1/users/self/courses"
+    params = {
+        "per_page": 100,
+        "enrollment_type[]": ["student"],
+        "enrollment_state[]": ["active", "invited_or_pending"],
+        "state[]": ["current", "future"],
+        "include[]": ["term"]
+    }
+    return list(paginate_canvas(url, params=params))
+
 def get_active_courses():
     url = f"{CANVAS_BASE_URL}/api/v1/courses"
     params = {"enrollment_state": "active", "per_page": 100}
@@ -304,7 +316,8 @@ def sync_once():
                 continue
 
     try:
-        summarize_intros_and_syllabi(courses)
+        courses_for_syllabi = get_current_and_future_courses()
+        summarize_intros_and_syllabi(courses_for_syllabi)
         print("Master page updated.")
     except requests.HTTPError as e:
         print("Error updating master page:", e)
