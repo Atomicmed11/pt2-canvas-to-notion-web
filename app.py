@@ -81,6 +81,8 @@ def get_current_and_future_courses():
     }
     try:
         courses = list(paginate_canvas(url, params=params))
+        if DEBUG: 
+            print(f"[DEBUG] users/self/courses returned: {len(courses)}")  # <-- added debug
         if courses:
             return courses
     except requests.HTTPError:
@@ -94,6 +96,7 @@ def get_current_and_future_courses():
         "include[]": ["term"],
     }
     courses2 = list(paginate_canvas(url2, params=params2))
+    print(f"[DEBUG] fallback /courses returned: {len(courses2)}")  # debug line
 
     now = _dt.datetime.utcnow()
     keep = []
