@@ -18,6 +18,7 @@ NOTION_VERSION = os.environ.get("NOTION_VERSION", "2022-06-28")
 ONLY_DATED = os.environ.get("ONLY_DATED", "true").lower() in ("1", "true", "yes")
 MASTER_TITLE = os.environ.get("MASTER_TITLE", "Syllabi & Start Here (All Courses)")
 SYLLABI_PAGE_ID = os.environ.get("SYLLABI_PAGE_ID", "").strip()
+DEBUG = os.environ.get("DEBUG", "false").lower() in ("1", "true", "yes")
 
 # Notion database property names (customize in Notion to match these, or change here)
 PROP_NAME = os.environ.get("NOTION_PROP_NAME", "Name")
@@ -219,7 +220,22 @@ def get_syllabus_html(course_id):
     r.raise_for_status()
     data = r.json()
     return data.get("syllabus_body")
-
+def get_front_page(course_id):
+    try:
+        r = requests.get(
+            f"{CANVAS_BASE_URL}/api/v1/courses/{course_id}/front_page",
+            headers=canvas_headers()
+        )
+        r.raise_for_status()
+        data = r.json()  # { title, body, html_url, ... }
+        return {
+            "title": data.get("title") or "Front Page",
+            "html": data.get("body") or "",
+            "web_url": data.get("html_url")
+        }
+    except requests.HTTPError:
+        return None
+    
 def get_pages_with_bodies(course_id):
     pages = list(paginate_canvas(f"{CANVAS_BASE_URL}/api/v1/courses/{course_id}/pages",
                                  params={"per_page": 100}))
@@ -331,29 +347,79 @@ def summarize_intros_and_syllabi(courses):
     master = get_or_create_master_page()
     # clear previous run so we don't stack sections
     clear_page_children(master)
+
     blocks = [heading(f"Sync run — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")]
+
     for c in courses:
         cid = c.get("id"); cname = c.get("name") or f"Course {cid}"
-        if not cid: continue
+        if not cid:
+            continue
 
+        if DEBUG:
+            print(f"[syllabi] Checking course {cid} — {cname}")
+
+        # Built-in Syllabus
         body = get_syllabus_html(cid)
+        if DEBUG:
+            print(f"[syllabi] syllabus_body present? {'yes' if body else 'no'}")
         if body:
-            blocks.append(bullet(f"[Syllabus] {cname} — {plain_text_preview(body, 120)}",
-                                 f"{CANVAS_BASE_URL}/courses/{cid}/assignments/syllabus"))
+            blocks.append(
+                bullet(
+                    f"[Syllabus] {cname} — {plain_text_preview(body, 120)}",
+                    f"{CANVAS_BASE_URL}/courses/{cid}/assignments/syllabus"
+                )
+            )
 
-        for p in get_pages_with_bodies(cid):
+        # Front page (many instructors put “Start Here” here)
+        fp = get_front_page(cid)
+        if DEBUG:
+            print(f"[syllabi] front page found? {'yes' if fp else 'no'}")
+        if fp and (
+            looks_like_orientation(fp["title"]) or
+            looks_like_syllabus(fp["title"]) or
+            "start" in norm(fp["title"])
+        ):
+            blocks.append(
+                bullet(
+                    f"[Front Page] {cname}: {fp['title']} — {plain_text_preview(fp['html'], 120)}",
+                    fp["web_url"]
+                )
+            )
+
+        # Course pages
+        pages = get_pages_with_bodies(cid)
+        if DEBUG:
+            print(f"[syllabi] pages fetched: {len(pages)}")
+        for p in pages:
             if looks_like_orientation(p["title"]) or looks_like_syllabus(p["title"]):
-                blocks.append(bullet(f"[Page] {cname}: {p['title']} — {plain_text_preview(p['html'], 120)}",
-                                     p["web_url"]))
+                blocks.append(
+                    bullet(
+                        f"[Page] {cname}: {p['title']} — {plain_text_preview(p['html'], 120)}",
+                        p["web_url"]
+                    )
+                )
 
-        for it in get_modules_and_items(cid):
-            if looks_like_orientation(it["title"]) or looks_like_syllabus(it["title"]) or looks_like_orientation(it.get("module") or ""):
+        # Modules & items
+        mods = get_modules_and_items(cid)
+        if DEBUG:
+            print(f"[syllabi] module items fetched: {len(mods)}")
+        for it in mods:
+            if (
+                looks_like_orientation(it["title"]) or
+                looks_like_syllabus(it["title"]) or
+                looks_like_orientation(it.get("module") or "")
+            ):
                 blocks.append(bullet(f"[Module] {cname}: {it['title']}", it.get("web_url")))
 
-        for f in find_syllabus_files(cid):
+        # Likely syllabus files
+        files = find_syllabus_files(cid)
+        if DEBUG:
+            print(f"[syllabi] likely syllabus files: {len(files)}")
+        for f in files:
             blocks.append(bullet(f"[File] {cname}: {f['title']}", f["web_url"]))
 
         time.sleep(0.2)
+
     append_blocks(master, blocks)
 
 def sync_once():
