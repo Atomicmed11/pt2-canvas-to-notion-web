@@ -252,6 +252,33 @@ def append_blocks(page_id, blocks):
                        json={"children": blocks})
     r.raise_for_status()
 
+def clear_page_children(page_id):
+    """
+    Deletes all child blocks from a Notion page so we can rewrite it fresh.
+    """
+    # paginate through children
+    url = f"https://api.notion.com/v1/blocks/{page_id}/children?page_size=100"
+    while True:
+        r = requests.get(url, headers=notion_headers())
+        r.raise_for_status()
+        data = r.json()
+        children = data.get("results", [])
+        if not children:
+            break
+        # delete each child block
+        for b in children:
+            bid = b["id"]
+            dr = requests.delete(f"https://api.notion.com/v1/blocks/{bid}", headers=notion_headers())
+            # ignore 404s to be resilient
+            if dr.status_code not in (200, 202, 204, 404):
+                dr.raise_for_status()
+            time.sleep(0.15)  # be nice to the API
+        # next page?
+        if data.get("has_more") and data.get("next_url"):
+            url = data["next_url"]
+        else:
+            break
+
 def bullet(text, href=None):
     if href:
         rt = [{"type":"text","text":{"content":text,"link":{"url":href}}}]
@@ -264,6 +291,8 @@ def heading(text):
 
 def summarize_intros_and_syllabi(courses):
     master = get_or_create_master_page()
+    # clear previous run so we don't stack sections
+    clear_page_children(master)
     blocks = [heading(f"Sync run — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")]
     for c in courses:
         cid = c.get("id"); cname = c.get("name") or f"Course {cid}"
