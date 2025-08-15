@@ -64,16 +64,54 @@ def paginate_canvas(url, params=None):
 
 # Courses & assignments
 def get_current_and_future_courses():
-    # Include courses that are current or future, and enrollments that are active or pending
+    """
+    Try /users/self/courses with simple params. If Canvas 4xx/5xx occurs,
+    fall back to /api/v1/courses and post-filter by term dates.
+    """
+    import datetime as _dt
+
+    # Primary attempt (most schools): no state[] filter
     url = f"{CANVAS_BASE_URL}/api/v1/users/self/courses"
     params = {
         "per_page": 100,
         "enrollment_type[]": ["student"],
         "enrollment_state[]": ["active", "invited_or_pending"],
-        "state[]": ["current", "future"],
-        "include[]": ["term"]
+        "include[]": ["term"],
     }
-    return list(paginate_canvas(url, params=params))
+    try:
+        courses = list(paginate_canvas(url, params=params))
+        if courses:
+            return courses
+    except requests.HTTPError:
+        pass  # fall through to fallback
+
+    # Fallback: /courses then keep ones that are current or future by term dates
+    url2 = f"{CANVAS_BASE_URL}/api/v1/courses"
+    params2 = {
+        "per_page": 100,
+        "enrollment_state": "active",   # broader
+        "include[]": ["term"],
+    }
+    courses2 = list(paginate_canvas(url2, params=params2))
+
+    now = _dt.datetime.utcnow()
+    keep = []
+    for c in courses2:
+        term = (c or {}).get("term") or {}
+        start = term.get("start_at")
+        end = term.get("end_at")
+        def _parse(s):
+            try:
+                # Canvas uses ISO8601 with Z or offset; let requests handle naive parsing
+                return _dt.datetime.fromisoformat(s.replace("Z", "+00:00")).replace(tzinfo=None)
+            except Exception:
+                return None
+        sdt, edt = _parse(start), _parse(end)
+        # keep if no term dates (be generous), or term hasn't ended,
+        # i.e., current or future
+        if (sdt is None and edt is None) or (edt and edt >= now) or (sdt and sdt >= now):
+            keep.append(c)
+    return keep
 
 def get_active_courses():
     url = f"{CANVAS_BASE_URL}/api/v1/courses"
