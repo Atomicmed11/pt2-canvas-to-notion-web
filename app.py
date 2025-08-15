@@ -17,6 +17,7 @@ CANVAS_BASE_URL = os.environ.get("CANVAS_BASE_URL", "").rstrip("/").strip()  # e
 NOTION_VERSION = os.environ.get("NOTION_VERSION", "2022-06-28")
 ONLY_DATED = os.environ.get("ONLY_DATED", "true").lower() in ("1", "true", "yes")
 MASTER_TITLE = os.environ.get("MASTER_TITLE", "Syllabi & Start Here (All Courses)")
+SYLLABI_PAGE_ID = os.environ.get("SYLLABI_PAGE_ID", "").strip()
 
 # Notion database property names (customize in Notion to match these, or change here)
 PROP_NAME = os.environ.get("NOTION_PROP_NAME", "Name")
@@ -208,6 +209,11 @@ def find_syllabus_files(course_id):
     return out
 
 def get_or_create_master_page(title=None):
+    # If a specific page was provided, use it directly.
+    if SYLLABI_PAGE_ID:
+        return SYLLABI_PAGE_ID
+
+    # Otherwise fall back to creating/finding a page INSIDE the database.
     title = title or MASTER_TITLE
     q = requests.post(
         f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query",
@@ -216,9 +222,14 @@ def get_or_create_master_page(title=None):
     ).json()
     if q.get("results"):
         return q["results"][0]["id"]
-    r = requests.post("https://api.notion.com/v1/pages", headers=notion_headers(),
-                      json={"parent": {"database_id": NOTION_DATABASE_ID},
-                            "properties": {PROP_NAME: {"title":[{"text":{"content":title}}]}}})
+    r = requests.post(
+        "https://api.notion.com/v1/pages",
+        headers=notion_headers(),
+        json={
+            "parent": {"database_id": NOTION_DATABASE_ID},
+            "properties": {PROP_NAME: {"title":[{"text":{"content": title}}]}}
+        }
+    )
     r.raise_for_status()
     return r.json()["id"]
 
