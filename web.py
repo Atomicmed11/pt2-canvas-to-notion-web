@@ -1,35 +1,37 @@
+# web.py
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Request
 from app import sync_once
 
 app = FastAPI()
-SYNC_SECRET = os.environ.get("SYNC_SECRET", "").strip()
 
-@app.get("/health")
-def health():
-    return {"ok": True}
-
-@app.post("/sync")
-def sync(key: str):
-    if not SYNC_SECRET or key != SYNC_SECRET:
-        raise HTTPException(status_code=401, detail="bad key")
-    sync_once()
-    return {"status": "synced"}
-from fastapi import FastAPI, Request
-import os
-from app import sync_once  # import your main sync
-
-app = FastAPI()
-SECRET_KEY = os.environ.get("SYNC_SECRET_KEY", "changeme")
+# ONE env var name for the secret (set this in Render)
+SECRET_KEY = os.environ.get("SYNC_SECRET_KEY", "").strip()
 
 @app.get("/")
 def root():
     return {"status": "ok", "message": "Canvas → Notion sync service is running."}
 
-@app.get("/sync")
-def sync(request: Request):
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+# Accept BOTH GET and POST so cron or browser tests work
+@app.api_route("/sync", methods=["GET", "POST"])
+async def sync(request: Request):
+    # Try query first: /sync?key=xxx
     key = request.query_params.get("key")
-    if key != SECRET_KEY:
+
+    # If not in query, try JSON body: {"key":"xxx"}
+    if not key:
+        try:
+            data = await request.json()
+            key = (data or {}).get("key")
+        except Exception:
+            key = None
+
+    if not SECRET_KEY or key != SECRET_KEY:
         return {"error": "unauthorized"}
+
     sync_once()
-    return {"status": "done"}
+    return {"status": "synced"}
