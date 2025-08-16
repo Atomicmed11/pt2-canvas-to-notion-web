@@ -6,6 +6,7 @@ import time
 import unicodedata
 import requests
 from datetime import datetime, timezone
+import google.generativeai as genai
 
 # ---------------------------
 # Environment variables
@@ -19,6 +20,12 @@ ONLY_DATED = os.environ.get("ONLY_DATED", "true").lower() in ("1", "true", "yes"
 MASTER_TITLE = os.environ.get("MASTER_TITLE", "Syllabi & Start Here (All Courses)")
 SYLLABI_PAGE_ID = os.environ.get("SYLLABI_PAGE_ID", "").strip()
 DEBUG = os.environ.get("DEBUG", "false").lower() in ("1", "true", "yes")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+AI_CLEANUP = os.environ.get("AI_CLEANUP", "false").lower() in ("1", "true", "yes")
+AI_MODEL = os.environ.get("AI_MODEL", "gemini-1.5-flash")
+
+PROP_AI_SUMMARY = os.environ.get("NOTION_PROP_AI_SUMMARY", "AI Summary")
+PROP_AI_TAGS    = os.environ.get("NOTION_PROP_AI_TAGS", "AI Tags")
 
 # Notion database property names (customize in Notion to match these, or change here)
 PROP_NAME = os.environ.get("NOTION_PROP_NAME", "Name")
@@ -136,8 +143,54 @@ def normalize_assignment(a, course_name):
         "points": a.get("points_possible"),
         "course": course_name,
         "published": a.get("published", True),
-        "workflow_state": a.get("workflow_state")
+        "workflow_state": a.get("workflow_state"),
+        "description": a.get("description") or ""
     }
+
+def ai_summarize_and_tag(name: str, description: str | None, course: str | None, due_at: str | None):
+    """
+    Use Google Gemini to produce a short summary + simple tags for an assignment.
+    Returns (summary_text, tags_text). If AI_CLEANUP is off or key missing, returns ("","").
+    """
+    if not AI_CLEANUP or not GEMINI_API_KEY:
+        return "", ""
+
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel(AI_MODEL)
+    except Exception as e:
+        print(f"[AI] init error: {e}")
+        return "", ""
+
+    prompt = (
+        "You are organizing a student's assignment in Notion.\n"
+        "Rewrite the details into:\n"
+        "1) A concise 1–3 sentence summary (action + deliverable + key constraints).\n"
+        "2) 3–5 comma-separated tags (short nouns like 'Essay, Reading, Lab, Quiz').\n\n"
+        f"Assignment name: {name}\n"
+        f"Course: {course or 'Unknown'}\n"
+        f"Due at (ISO8601): {due_at or 'None'}\n"
+        f"Description (may be empty): {description or ''}\n\n"
+        "Respond exactly as:\n"
+        "Summary: <your summary>\n"
+        "Tags: tag1, tag2, tag3\n"
+    )
+
+    try:
+        resp = model.generate_content(prompt)
+        text = (resp.text or "").strip()
+    except Exception as e:
+        print(f"[AI] generation error: {e}")
+        return "", ""
+
+    summary, tags = "", ""
+    for line in text.splitlines():
+        low = line.lower().strip()
+        if low.startswith("summary:"):
+            summary = line.split(":",1)[1].strip()
+        elif low.startswith("tags:"):
+            tags = line.split(":",1)[1].strip()
+    return summary, tags
 
 def notion_query_by_canvas_id(canvas_id):
     url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
@@ -161,6 +214,20 @@ def build_notion_properties(x):
     status_val = x.get("workflow_state") or ("published" if x.get("published") else "unpublished")
     if status_val:
         props[PROP_STATUS] = {"rich_text": [{"text": {"content": status_val}}]}
+
+    # --- NEW: AI cleanup via Gemini (writes to "AI Summary" and "AI Tags")
+    if AI_CLEANUP:
+        summary, tags = ai_summarize_and_tag(
+            x.get("name", ""),
+            x.get("description", ""),
+            x.get("course", ""),
+            x.get("due_at")
+        )
+        if summary:
+            props[PROP_AI_SUMMARY] = {"rich_text": [{"text": {"content": summary}}]}
+        if tags:
+            props[PROP_AI_TAGS] = {"rich_text": [{"text": {"content": tags}}]}
+
     return props
 
 def notion_create_page(props):
